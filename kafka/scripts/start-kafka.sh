@@ -1,5 +1,47 @@
 #!/bin/sh
 
+TAG=$EIP_TAG
+
+MY_INST_ID=$(curl http://169.254.169.254/latest/meta-data/instance-id)
+
+MY_IP="UNDEFINED"
+
+ZOOKEEPER_NODES=""
+ZOOKEEPER_CONNECT=""
+COUNTER=1
+ASSIGNED=0
+
+eips=$(aws ec2 describe-addresses --region eu-central-1 --filter Name=tag-value,Values=$TAG)
+for eip in $(echo "${eips}" | jq -rc '.Addresses[]'); do
+    INST_ID=$(echo $eip | jq -r '.InstanceId')
+    ALLOC=$(echo $eip | jq -r '.AllocationId')
+    IP=$(echo $eip | jq -r '.PublicIp')
+    IP_INT=$(echo $IP | tr . '\n' | awk '{s = s*256 + $1} END{print s}')
+    if [[ $INST_ID == 'null' ]] && [[ $ASSIGNED == 0 ]]; then
+        ASSIGNATION_FAILED=0
+        aws ec2 associate-address --region eu-central-1 --allocation-id $ALLOC --instance-id $MY_INST_ID || ASSIGNATION_FAILED=1
+        if [[ $ASSIGNATION_FAILED == 0 ]]; then
+            ASSIGNED=1
+            MY_IP=$IP
+            IP='0.0.0.0'
+            echo "Assigned $IP"
+        fi
+    fi
+    
+    ZOOKEEPER_NODES=$ZOOKEEPER_NODES"server.$IP_INT=$IP:2888:3888"$'\n'
+    if [ $COUNTER == 1 ]; then
+        ZOOKEEPER_CONNECT="$IP:2181"
+    else
+        ZOOKEEPER_CONNECT="$ZOOKEEPER_CONNECT,$IP:2181"
+    fi
+    COUNTER=$(($COUNTER+1))
+done
+
+MY_ZOOKEEPER_ID=$(echo $MY_IP | tr . '\n' | awk '{s = s*256 + $1} END{print s}') 
+
+ADVERTISED_HOST = $MY_IP
+
+
 # Optional ENV variables:
 # * ADVERTISED_HOST: the external ip for the container, e.g. `docker-machine ip \`docker-machine active\``
 # * ADVERTISED_PORT: the external port for Kafka, e.g. 9092
@@ -20,7 +62,7 @@ if [ ! -z "$ADVERTISED_HOST" ]; then
     if grep -q "^advertised.host.name" $KAFKA_HOME/config/server.properties; then
         sed -r -i "s/#(advertised.host.name)=(.*)/\1=$ADVERTISED_HOST/g" $KAFKA_HOME/config/server.properties
     else
-        echo "advertised.host.name=$ADVERTISED_HOST" >> $KAFKA_HOME/config/server.properties
+        echo "\n advertised.host.name=$ADVERTISED_HOST" >> $KAFKA_HOME/config/server.properties
     fi
 fi
 if [ ! -z "$ADVERTISED_PORT" ]; then
@@ -28,7 +70,7 @@ if [ ! -z "$ADVERTISED_PORT" ]; then
     if grep -q "^advertised.port" $KAFKA_HOME/config/server.properties; then
         sed -r -i "s/#(advertised.port)=(.*)/\1=$ADVERTISED_PORT/g" $KAFKA_HOME/config/server.properties
     else
-        echo "advertised.port=$ADVERTISED_PORT" >> $KAFKA_HOME/config/server.properties
+        echo "\n advertised.port=$ADVERTISED_PORT" >> $KAFKA_HOME/config/server.properties
     fi
 fi
 
